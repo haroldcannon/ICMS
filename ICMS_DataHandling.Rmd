@@ -1,0 +1,102 @@
+---
+title: "ICMS_DataHandling"
+author: "Harold Cannon"
+date: "2024-05-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(readxl)
+library(tidyverse)
+library(janitor)
+library(purrr)
+
+```
+
+```{r, echo=TRUE}
+##file name:
+file <- "./ExcelExp_Long.xls"
+```
+
+```{r DataWrangle}
+sheetNames <- excel_sheets(file)
+rawData <- lapply(sheetNames, function(name) read_excel(file, sheet = name)) ##read the file
+names(rawData) <- sheetNames #get the metabolite name
+rawData <- head(rawData, -2) ##remove the 2 extra phantom sheets
+
+cleanData <- rawData %>%
+  imap(function(sheet, name) {
+    sheet <- as.data.frame(sheet) # Convert to data frame
+    colnames(sheet) <- sheet[3,] # Set column names
+    sheet <- sheet[-c(1:3),] # Remove the first three rows
+    sheet <- clean_names(sheet) # Clean column names
+    sheet <- sheet %>% mutate(metabolite = name) # Add metabolite column
+    return(sheet)
+  }) %>%
+  lapply(function(sheet) {
+    sheet <- sheet %>% 
+      filter(!is.na(sample_id)) %>% 
+      mutate(across(everything(), ~ na_if(.x, "NF"))) %>% ##remove NF
+      mutate(sample_id = gsub("([0-9])-([0-9])", "\\1.\\2", sample_id)) %>%
+      select(metabolite, sample_id, area, rt, s_n) %>% ## <- INSERT COLUMNS
+      mutate(across(c(area, rt, s_n), as.numeric))
+    
+    sheet <- sheet %>% ##This whole chunk is splitting the sample_id col
+      mutate(num_underscores = str_count(sample_id, "_")) %>%
+      mutate(
+        sample = str_extract(sample_id, "^[^_]+"),
+        conc = as.numeric(str_replace(str_extract(sample_id, "_[^_]+"), "_", "")),
+        type = if_else(num_underscores == 2, NA_character_, str_extract(sample_id, "(?<=_)[^_]*(?=_[^_]*$)")),
+        replicate = as.numeric(str_extract(sample_id, "[^_]+$"))
+      ) %>%
+      select(-sample_id, -num_underscores)
+    
+    return(sheet)
+  }) %>%
+  bind_rows() ## bind all the sheets together
+
+##generic plot
+plot<- ggplot()+ theme_bw()+  #no grey background
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major=element_blank(),
+        axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8),
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 8))
+
+
+```
+
+## Summary statistics
+```{r summary}
+## Retention times for each metabolite
+avRT <- cleanData %>% 
+  group_by(metabolite) %>% 
+  summarise(meanVal = mean(rt, na.rm = TRUE),
+            sdVal = sd(rt, na.rm = TRUE)) %>% 
+  mutate(metabolite = factor(metabolite, levels = metabolite[order(meanVal)]))
+
+
+plot + geom_point(data = avRT, aes(x = metabolite, y = meanVal),
+                  size = 5) +
+  geom_errorbar(data = avRT, aes(x=metabolite, ymin = meanVal - sdVal, ymax = meanVal + sdVal), width = 0.5) +
+  labs(x = "Metabolite", y = "Retention time", title = "Mean retention time for each metabolite across all conditions and concentrations")
+
+
+```
+
+
+```{r VaryingCondition}
+
+avRT <- cleanData %>% 
+  group_by(metabolite, type) %>% ##insert condition of interest here 
+  summarise(meanVal = mean(rt, na.rm = TRUE),
+            sdVal = sd(rt, na.rm = TRUE)) %>% 
+  mutate(metabolite = factor(metabolite, levels = metabolite[order(meanVal)]))
+
+
+```
+
