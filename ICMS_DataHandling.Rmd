@@ -16,13 +16,20 @@ library(ggpmisc)
 ```
 
 ```{r, echo=TRUE}
-##file name:
+##Enter file path here:
 file <- "./ExcelExp_Long.xls"
 ```
 
 ```{r DataWrangle}
+##This chunk process all the raw data to a much more manageable database format
+
+##Depending what you want to analyse, add or take away from this vector.
+##metabolite and sample_id should always be included.
+##If this is changed, future chunks may need to be editted as required
+selectFor <- c(metabolite, sample_id, area, rt, s_n)
+
 sheetNames <- excel_sheets(file)
-rawData <- lapply(sheetNames, function(name) read_excel(file, sheet = name)) ##read the file
+rawData <- suppressMessages(lapply(sheetNames, function(name) read_excel(file, sheet = name))) ##read the file
 names(rawData) <- sheetNames #get the metabolite name
 rawData <- head(rawData, -2) ##remove the 2 extra phantom sheets
 
@@ -74,14 +81,14 @@ plot<- ggplot()+ theme_bw()+  #no grey background
 
 ## Summary statistics
 ```{r summary}
-## Retention times for each metabolite
+##Plots the average retention times for each metabolite
+
 avRT <- cleanData %>% 
-  filter(sample=="W") %>% 
+  filter(sample=="W") %>% ##If wanting to only look at a certain sample type, edit here
   group_by(metabolite) %>% 
   summarise(meanVal = mean(rt, na.rm = TRUE),
             sdVal = sd(rt, na.rm = TRUE)) %>% 
   mutate(metabolite = factor(metabolite, levels = metabolite[order(meanVal)]))
-
 
 plot + geom_point(data = avRT, aes(x = metabolite, y = meanVal),
                   size = 5) +
@@ -95,6 +102,8 @@ Check how varying conditions of the run affect the RT and S/N
 
 ```{r VaryingCondition}
 ##Calculate the mean RT for standard conditions
+##Been a while since Ive used this code. By changing the requirements in the filter() functions, it should be fairly easy to get working again.
+
 standard_RT <- cleanData %>%
   filter(sample == "VFA" & type == "Norm") %>% 
   group_by(metabolite) %>%
@@ -155,10 +164,14 @@ ggplot(avSNDiffs, aes(x = metabolite, y = meanDiff, color = type)) +
 How varying concentrations affects area, RT and s_n
 
 ```{r varyconc}
+##Plot data as the concentration varies. Useful for viewing calibration curves or if the RT changes over different concentrations.
 
+##change things of interest here
+sampleVec <- c("W")
+metaboliteVec <- c("D7_Isobutyrate","D2_Propionate","C13_Butyrate")
 concInfo <- cleanData %>%
-  filter(sample == "W") %>%
-  filter(metabolite %in% c("D7_Isobutyrate","D2_Propionate","C13_Butyrate")) %>% 
+  filter(sample %in% sampleVec) %>% 
+  filter(metabolite %in% metaboliteVec) %>% 
   group_by(metabolite,conc) %>%
   summarize(
     mean_area = mean(area, na.rm = TRUE),
@@ -170,7 +183,6 @@ concInfo <- cleanData %>%
     .groups = 'drop' # Ungroup after summarizing
   ) %>% 
   na.omit()
-
 ##Funfction to get R squared values
 get_r_squared <- function(data, formula) {
   metabolites <- unique(data$metabolite)
@@ -184,9 +196,10 @@ get_r_squared <- function(data, formula) {
 }
 
 
+
 # Get R-squared values for area and concentration
 r_squared_values <- get_r_squared(concInfo, mean_area ~ conc)
-# Plot with annotated R-squared values
+# Plot concentration against area
 ggplot(concInfo, aes(x = conc, y = mean_area, color = metabolite)) +
   geom_point(size = 3) +
   geom_smooth(method = "lm", se = FALSE) +
@@ -204,6 +217,7 @@ ggplot(concInfo, aes(x = conc, y = mean_area, color = metabolite)) +
 
 
 
+##plot concentration against RT
 ggplot(concInfo, aes(x = log2(conc), y = mean_rt)) +
   geom_point(size = 3) +
   geom_errorbar(aes(ymin = mean_rt - sd_rt, ymax = mean_rt + sd_rt), 
@@ -214,9 +228,11 @@ ggplot(concInfo, aes(x = log2(conc), y = mean_rt)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
   scale_color_brewer(palette = "Set1")
 
+
+
 # Get R-squared values for area and signal/noise
 r_squared_values <- get_r_squared(concInfo, mean_s_n ~ conc)
-# Plot with annotated R-squared values
+# Plot concentration again S/N ratio
 ggplot(concInfo, aes(x = conc, y = mean_s_n, color = metabolite)) +
   geom_point(size = 3) +
   geom_smooth(method = "lm", se = FALSE) + # Add linear trend line
@@ -235,6 +251,8 @@ ggplot(concInfo, aes(x = conc, y = mean_s_n, color = metabolite)) +
 
 
 ```{r}
+##Cant remember what I used this for exactly, but again if needed a little modification could make it useful again.
+
 
 tempData <- cleanData %>% 
   filter(metabolite %in% c("D2_Propionate","C13_Butyrate")) %>% 
