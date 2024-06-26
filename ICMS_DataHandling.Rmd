@@ -8,9 +8,10 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE)
 library(readxl)
+library(rlang)
 library(tidyverse)
 library(janitor)
-library(purrr)
+library(ggpmisc)
 
 ```
 
@@ -38,7 +39,8 @@ cleanData <- rawData %>%
     sheet <- sheet %>% 
       filter(!is.na(sample_id)) %>% 
       mutate(across(everything(), ~ na_if(.x, "NF"))) %>% ##remove NF
-      mutate(sample_id = gsub("([0-9])-([0-9])", "\\1.\\2", sample_id)) %>%
+      mutate(sample_id = gsub("([0-9])-([0-9])", 
+                              "\\1.\\2", sample_id)) %>%
       select(metabolite, sample_id, area, rt, s_n) %>% ## <- INSERT COLUMNS
       mutate(across(c(area, rt, s_n), as.numeric))
     
@@ -74,6 +76,7 @@ plot<- ggplot()+ theme_bw()+  #no grey background
 ```{r summary}
 ## Retention times for each metabolite
 avRT <- cleanData %>% 
+  filter(sample=="W") %>% 
   group_by(metabolite) %>% 
   summarise(meanVal = mean(rt, na.rm = TRUE),
             sdVal = sd(rt, na.rm = TRUE)) %>% 
@@ -87,16 +90,181 @@ plot + geom_point(data = avRT, aes(x = metabolite, y = meanVal),
 
 
 ```
-
+## Varying conditions
+Check how varying conditions of the run affect the RT and S/N
 
 ```{r VaryingCondition}
+##Calculate the mean RT for standard conditions
+standard_RT <- cleanData %>%
+  filter(sample == "VFA" & type == "Norm") %>% 
+  group_by(metabolite) %>%
+  summarize(std_mean_rt = mean(rt, na.rm = TRUE), .groups = 'drop')
+##Calculate the mean SN for standard conditions
+standard_SN <- cleanData %>%
+  filter(sample == "VFA" & is.na(type)) %>% 
+  group_by(metabolite) %>%
+  summarize(std_mean_SN = mean(s_n, na.rm = TRUE), .groups = 'drop')
+##Join with other database and calculate individual differences
+cleanData_StandardInfo <- cleanData %>%
+  left_join(standard_RT, by = "metabolite") %>%
+  left_join(standard_SN, by = "metabolite") %>%
+  mutate(
+    diffToStandardSN = s_n - std_mean_SN, 
+    diffToStandardRT = rt - std_mean_rt
+  ) %>% 
+  select(-std_mean_rt, -std_mean_SN)
+##Find mean and sd for RT and SN differences
+avRTDiffs <- cleanData_StandardInfo %>%
+  filter(!is.na(type)) %>%  # Exclude rows where type is NA for the final summary
+  group_by(metabolite, type) %>%
+  summarize(
+    meanDiff = mean(diffToStandardRT, na.rm = TRUE),
+    sdDiff = sd(diffToStandardRT, na.rm = TRUE),
+    .groups = 'drop'
+  )
+avSNDiffs <- cleanData_StandardInfo %>%
+  filter(!is.na(type)) %>%  # Exclude rows where type is NA for the final summary
+  group_by(metabolite, type) %>%
+  summarize(
+    meanDiff = mean(diffToStandardSN, na.rm = TRUE),
+    sdDiff = sd(diffToStandardSN, na.rm = TRUE),
+    .groups = 'drop'
+  )
 
-avRT <- cleanData %>% 
-  group_by(metabolite, type) %>% ##insert condition of interest here 
-  summarise(meanVal = mean(rt, na.rm = TRUE),
-            sdVal = sd(rt, na.rm = TRUE)) %>% 
-  mutate(metabolite = factor(metabolite, levels = metabolite[order(meanVal)]))
 
+ggplot(avRTDiffs, aes(x = metabolite, y = meanDiff, color = type)) +
+  geom_point(position = position_dodge(width = 0.5), size = 3) +
+  geom_errorbar(aes(ymin = meanDiff - sdDiff, ymax = meanDiff + sdDiff), 
+                width = 0.2, position = position_dodge(width = 0.5)) +
+  labs(x = "Metabolite", y = "Average Difference in RT", 
+       title = "Average Difference in RT by Metabolite and Type") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_color_brewer(palette = "Set1")
+
+ggplot(avSNDiffs, aes(x = metabolite, y = meanDiff, color = type)) +
+  geom_point(position = position_dodge(width = 0.5), size = 3) +
+  geom_errorbar(aes(ymin = meanDiff - sdDiff, ymax = meanDiff + sdDiff), 
+                width = 0.2, position = position_dodge(width = 0.5)) +
+  labs(x = "Metabolite", y = "Average Difference in SN", 
+       title = "Average Difference in SN by Metabolite and Type") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_color_brewer(palette = "Set1")
+
+```
+## Varying concentrations
+How varying concentrations affects area, RT and s_n
+
+```{r varyconc}
+
+concInfo <- cleanData %>%
+  filter(sample == "W") %>%
+  filter(metabolite %in% c("D7_Isobutyrate","D2_Propionate","C13_Butyrate")) %>% 
+  group_by(metabolite,conc) %>%
+  summarize(
+    mean_area = mean(area, na.rm = TRUE),
+    sd_area = sd(area, na.rm = TRUE),
+    mean_rt = mean(rt, na.rm = TRUE),
+    sd_rt = sd(rt, na.rm = TRUE),
+    mean_s_n = mean(s_n, na.rm = TRUE),
+    sd_s_n = sd(s_n, na.rm = TRUE),
+    .groups = 'drop' # Ungroup after summarizing
+  ) %>% 
+  na.omit()
+
+##Funfction to get R squared values
+get_r_squared <- function(data, formula) {
+  metabolites <- unique(data$metabolite)
+  r_squared_values <- numeric(length(metabolites))
+  for (i in seq_along(metabolites)) {
+    lm_model <- lm(formula, data = subset(data, metabolite == metabolites[i]))
+    r_squared_values[i] <- formatC(summary(lm_model)$r.squared, digits = 4)
+  }
+  names(r_squared_values) <- metabolites
+  return(r_squared_values)
+}
+
+
+# Get R-squared values for area and concentration
+r_squared_values <- get_r_squared(concInfo, mean_area ~ conc)
+# Plot with annotated R-squared values
+ggplot(concInfo, aes(x = conc, y = mean_area, color = metabolite)) +
+  geom_point(size = 3) +
+  geom_smooth(method = "lm", se = FALSE) +
+  geom_errorbar(
+    aes(ymin = mean_area - sd_area, ymax = mean_area + sd_area), 
+    width = 0.2, 
+    color = "black") +
+  labs(x = "Concentration", y = "Mean Area", title = "Mean Area by Concentration") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  facet_wrap(~ metabolite) + # Use switch argument to adjust width
+  geom_text(data = data.frame(metabolite = names(r_squared_values), 
+                              r_squared = r_squared_values),
+            aes(x = -Inf, y = Inf, label = paste("R^2 ==", r_squared)), 
+            hjust = 0, vjust = 1, size = 4, parse = TRUE, color = "black")
+
+
+
+ggplot(concInfo, aes(x = log2(conc), y = mean_rt)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = mean_rt - sd_rt, ymax = mean_rt + sd_rt), 
+                width = 0.2, position = position_dodge(width = 0.5)) +
+  labs(x = "Concentration", y = "Mean RT", 
+       title = "Mean RT by Concentration") +
+  facet_wrap(~ metabolite, scales = "free_y") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_color_brewer(palette = "Set1")
+
+# Get R-squared values for area and signal/noise
+r_squared_values <- get_r_squared(concInfo, mean_s_n ~ conc)
+# Plot with annotated R-squared values
+ggplot(concInfo, aes(x = conc, y = mean_s_n, color = metabolite)) +
+  geom_point(size = 3) +
+  geom_smooth(method = "lm", se = FALSE) + # Add linear trend line
+  geom_errorbar(aes(ymin = mean_s_n - sd_s_n, ymax = mean_s_n + sd_s_n), 
+                width = 0.2, position = position_dodge(width = 0.5), color = "black") +
+  labs(x = "Concentration", y = "Mean Signal/Noise ratio", title = "Mean S/N by Concentration") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_color_brewer(palette = "Set1") +
+  facet_wrap(~ metabolite, ncol = 5, nrow = 2) + # Use switch argument to adjust width
+  geom_text(data = data.frame(metabolite = names(r_squared_values), 
+                              r_squared = r_squared_values),
+            aes(x = -Inf, y = Inf, label = paste("R^2 ==", r_squared)), 
+            hjust = 0, vjust = 1, size = 4, parse = TRUE, color = "black")
+
+```
+
+
+```{r}
+
+tempData <- cleanData %>% 
+  filter(metabolite %in% c("D2_Propionate","C13_Butyrate")) %>% 
+  filter(sample %in% c("M"))
+
+tempData1 <- cleanData %>% 
+  filter(metabolite %in% c("D2_Propionate")) %>% 
+  filter(sample %in% c("M"))
+
+tempData2 <- cleanData %>% 
+  filter(metabolite %in% c("C13_Butyrate")) %>% 
+  filter(sample %in% c("M")) %>% 
+  rbind(tempData1)
+
+
+# Plot with annotated R-squared values
+ggplot(tempData, aes(x = as.numeric(type), y = area, color = as.factor(conc))) +
+  geom_point(size = 3) +
+  geom_point(data=tempData2, aes(x = as.numeric(conc), y=area, color = "black"), color = "black") +
+  geom_smooth(method = "lm", se = FALSE) + # Add linear trend line
+  #geom_errorbar(aes(ymin = mean_area - sd_area, ymax = mean_area + sd_area), 
+  #              width = 0.2, position = position_dodge(width = 0.5), color = "black") +
+  labs(x = "Concentration", y = "Mean Area", title = "Mean Area by Concentration") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_color_brewer(palette = "Set1") +
+  facet_wrap(~ metabolite) #+ # Use switch argument to adjust width
+  ##geom_text(data = data.frame(metabolite = names(r_squared_values), 
+  ##                            r_squared = r_squared_values),
+  ##          aes(x = -Inf, y = Inf, label = paste("R^2 ==", r_squared)), 
+  ##          hjust = 0, vjust = 1, size = 4, parse = TRUE, color = "black")
 
 ```
 
